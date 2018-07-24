@@ -1,0 +1,183 @@
+Function ActionCanExecute(ActionName)
+  On Error Resume Next
+  'msgbox ActionName
+  if ActionName = "act_ReportTestLabSteps" then
+     'msgbox "Running Export from testlab:"
+     Test_ReportTestLabSteps
+  end if
+
+End Function
+
+Function Test_EnumerateAllChildren(folder,row,objWks,tsetmgr)
+    On Error Resume Next
+    'create list of child folders AND test sets
+    'child folders are NOT full folder objects, this is fixed in Test_DumpTestSetToExcel
+    set children = folder.NewList()
+
+    'Each child Test Set to Excel
+    row = Test_DumpTestSetToExcel(folder,row,objWks,tsetmgr)
+    'msgbox "Current Folder: " & folder.Name & "; row: " & row
+    'base case, no children folders, unnecessary to but kept it to be safe
+    if (children.count = 0) then
+        'msgbox "No more Children"
+        exit Function
+    end if
+    'msgbox "Children Count: " & children.count
+
+    'Recursive loop, enter each child folder
+    dim count
+    for count = 1 To children.count
+        'msgbox count & ": " & children.Item(count).Name
+        'Recursive Call on each child folder
+        '24 is the value retured by folder.type in QC
+        if (children.Item(count).Type = 24) then
+           call Test_EnumerateAllChildren(children.Item(count),row,objWks,tsetmgr)
+        end if
+    next
+
+    On Error GoTo 0
+End Function
+
+Function Test_DumpTestSetToExcel(folder,row,objWks,tsetmgr)
+    'set tsfactory = folder.TestSetFactory
+    'set testsets = tsfactory.NewList("")
+
+    'child folders passed to this function do not work without
+    'finding them through the testsetmanager object
+    'child folders are incorrectly acquired when listing a folder's children by NewList()
+    'but I found no other effective way to do it
+    set tsetnodepath = tsetmgr.nodebypath(folder.path)'use folder.path to located itself
+    set tsfactory = tsetnodepath.TestSetFactory'create a test set from fixed folder
+    set testsets = tsfactory.NewList("")'created list of test sets in this folder
+    'msgbox folder.name & "," & testsets.count
+
+    'loop through all sets in the folder
+    for each tset in testsets
+        'msgbox "Test Set: " & tset.name & " " & tset.ID & " " & tset.Status
+        set tstfactory = tset.TSTestFactory
+        set tests = tstfactory.NewList("")
+        'for each set, loop through indiviudal tests
+        if (tests.count = 0) then
+            row=row+1
+        else
+            for each test in tests
+                set plantest=test.Test
+                objWks.Cells(row,1).Value = folder.path
+                objWks.Cells(row,2).Value = plantest.ID
+                objWks.Cells(row,3).Value = plantest.Name
+                objWks.Cells(row,4).Value = plantest.Field("TS_DESCRIPTION")
+                objWks.Cells(row,5).Value = "00:10"
+                objWks.Cells(row,6).Value = plantest.Field("TS_USER_04")
+                set steplist = plantest.DesignStepFactory.NewList("")
+                if (steplist.count = 0) then
+                    row=row+1
+                else
+                   for each step in steplist
+                       'msgbox typename(step)
+                       objWks.Cells(row,7).Value = step.ID
+                       objWks.Cells(row,8).Value = ""
+                       objWks.Cells(row,9).Value = step.StepName
+                       objWks.Cells(row,10).Value = step.Field("DS_DESCRIPTION")
+                       objWks.Cells(row,11).Value = step.Field("DS_EXPECTED")
+                       row=row+1
+                   next
+                end if
+            next
+        end if
+        'row = row+1'needed in case there are no test instances in the set
+    next
+    return row
+End Function
+
+Sub Test_ReportTestLabSteps
+    On Error Resume Next
+
+    dim td 'TestDirector connection
+    dim tsetf 'TestSet factory
+    dim tset 'TestSet
+    dim tstestf 'Test in Test Set factory
+    dim tstestl 'List
+    dim tstest 'Test in test set
+    dim folderFac, folder, child, children
+    dim FolderID
+    folderID = TestSetFolder_Fields("CF_ITEM_ID").Value 'value of selected folder
+
+    'fails if either root is selected or an individual case
+    if folderID=0 then
+       msgbox "Select a folder that is not root"
+       exit sub
+    end if
+
+    'open excel workbox for export
+    set objXLS = CreateObject("Excel.Application")
+    objXLS.Visible = False
+    set objWkb = objXLS.Workbooks.Add
+    set objWks = objWkb.Worksheets(1)
+    objWks.Name = "Report Test+Step"
+
+    'write excel headers
+    'objWks.Cells(1,1).Value =  "Parent"
+    'objWks.Cells(1,2).Value =  "TestSetName"
+    'objWks.Cells(1,3).Value =  "TestSetID"
+    'objWks.Cells(1,4).Value =  "TestSetStatus"
+    'objWks.Cells(1,5).Value =  "TestID"
+    'objWks.Cells(1,6).Value =  "TestName"
+    'objWks.Cells(1,7).Value =  "Type"
+    'objWks.Cells(1,8).Value =  "Status"
+    'objWks.Cells(1,9).Value =  "ExecDate"
+    'objWks.Cells(1,10).Value =  "Time"
+    objWks.Cells(1,1).Value =  "Parent"
+    objWks.Cells(1,2).Value =  "TestID"
+    objWks.Cells(1,3).Value =  "TestName"
+    objWks.Cells(1,4).Value =  "Description"
+    objWks.Cells(1,5).Value =  "PlannedTime"
+    objWks.Cells(1,6).Value =  "Priority"
+    objWks.Cells(1,7).Value =  "StepID"
+    objWks.Cells(1,8).Value =  "SharedStepID"
+    objWks.Cells(1,9).Value =  "StepName"
+    objWks.Cells(1,10).Value =  "Action Description"
+    objWks.Cells(1,11).Value =  "Result Description"
+
+
+    'setup folder structure
+    set td = TDConnection 'open connection
+    set folderFac = td.TestLabFolderFactory
+    set folder = folderFac.Item(folderID)
+
+    set children = folder.NewList()
+    set child = children.Item(1)
+    set tsetmgr = td.TestSetTreeManager
+    'set tsetnodepath = tsetmgr.nodebypath(child.path)
+    'msgbox typename(tsetnodepath.testsetfactory)
+
+    dim row
+    row = 2
+    'finds all test sets
+    call Test_EnumerateAllChildren(folder,row,objWks,tsetmgr)
+
+    'Save workbook to excel
+    objWkb.SaveAs ("c:\temp\TestLab_" & split(date,"/")(2) & split(date,"/")(1) & split(date,"/")(0) & ".xlsx")
+    'Close and Quit
+    objWkb.Close
+    objXLS.Quit
+
+    set objXLS = Nothing
+    set objWkb = Nothing
+    set objWks = Nothing
+    'msgbox "done3"
+
+    On Error Goto 0
+End Sub
+
+Function TestSetTests_FieldCanChange(FieldName, NewValue)
+  On Error Resume Next
+
+  TestSetTests_FieldCanChange = DefaultRes
+  On Error GoTo 0
+End Function
+
+Sub TestSetTests_FieldChange(FieldName)
+  On Error Resume Next
+
+  On Error GoTo 0
+End Sub
